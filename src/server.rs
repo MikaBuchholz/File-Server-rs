@@ -57,8 +57,8 @@ pub async fn extract_json(json_like: &str) -> Option<(String, String)> {
 }
 
 pub async fn parse_params(
-    instr: String,
-    path: String,
+    instr: &String,
+    path: &String,
     socket: &mut tokio::net::TcpStream,
 ) -> Option<()> {
     if !is_inside_root(&path) {
@@ -79,27 +79,38 @@ pub async fn start_server() -> io::Result<()> {
     loop {
         let (mut socket, _) = listener.accept().await?;
 
-        // read up to 1024 bytes
         socket.read(&mut buffer[..]).await?;
+
         let payload = str::from_utf8(&buffer).unwrap().replace("\0", "");
 
-        let params = payload;
-        let json_content = extract_json(params.as_str()).await;
+        let json_content = extract_json(&payload).await;
 
         if json_content.is_none() {
             send_response(
                 &mut socket,
-                "HTTP/1.1 400 Bad\r\n\r\nNo Json provided\r\n\r\n",
+                "HTTP/1.1 400 Bad\r\n\r\nNo payload provided\r\n\r\n",
             )
             .await?;
         } else {
             let (instr, path) = json_content.unwrap();
 
-            parse_params(instr, path, &mut socket).await;
+            match parse_params(&instr, &path, &mut socket).await {
+                Some(_) => {
+                    println!(
+                        "Instruction: `{}` on path: `{}` executed succesfuly",
+                        instr, path
+                    )
+                }
+                None => {
+                    send_response(
+                        &mut socket,
+                        "HTTP/1.1 400 Bad\r\n\r\nProvided path is unauthorized!",
+                    )
+                    .await?
+                }
+            }
         }
 
         socket.flush().await?;
-
-        //TODO parse json and get correctly, pass them to parse_params
     }
 }

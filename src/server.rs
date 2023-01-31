@@ -1,12 +1,14 @@
+use crate::file_handling::build_json_response;
 use crate::file_handling::{execute_instruction, is_inside_root};
 
+use std::collections::HashMap;
 use std::io;
 
 use std::str;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-pub async fn send_response(socket: &mut tokio::net::TcpStream, response: &str) -> io::Result<()> {
+pub async fn send_response(socket: &mut tokio::net::TcpStream, response: String) -> io::Result<()> {
     socket.write_all(response.as_bytes()).await?;
     Ok(())
 }
@@ -60,12 +62,13 @@ pub async fn parse_params(
     instr: &String,
     path: &String,
     socket: &mut tokio::net::TcpStream,
+    cache: &mut HashMap<(String, String), (String, usize)>,
 ) -> Option<()> {
     if !is_inside_root(&path) {
         return None;
     }
 
-    let _ = execute_instruction(&instr, &path, socket).await;
+    let _ = execute_instruction(&instr, &path, socket, cache).await;
 
     Some(())
 }
@@ -74,7 +77,9 @@ pub async fn parse_params(
 pub async fn start_server() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
 
-    let mut buffer = [0; 1024];
+    let mut buffer = [0; 256];
+
+    let mut cache: HashMap<(String, String), (String, usize)> = HashMap::new();
 
     loop {
         let (mut socket, _) = listener.accept().await?;
@@ -82,32 +87,40 @@ pub async fn start_server() -> io::Result<()> {
         socket.read(&mut buffer[..]).await?;
 
         let payload = str::from_utf8(&buffer).unwrap().replace("\0", "");
-
-        let json_content = extract_json(&payload).await;
-
-        if json_content.is_none() {
-            send_response(
-                &mut socket,
-                "HTTP/1.1 400 Bad\r\n\r\nNo payload provided\r\n\r\n",
-            )
-            .await?;
-        } else {
-            let (instr, path) = json_content.unwrap();
-
-            match parse_params(&instr, &path, &mut socket).await {
-                Some(_) => {
-                    println!(
-                        "Instruction: `{}` on path: `{}` executed succesfuly",
-                        instr, path
-                    )
-                }
-                None => {
+        //TODO: invalidate/update cache after write operations (TODO: write ops) to specific cache location
+        match extract_json(&payload).await {
+            Some((instr, path)) => match cache.get(&(instr.clone(), path.clone())) {
+                Some((content, len)) => {
+                    println!("Cache hit!");
                     send_response(
                         &mut socket,
-                        "HTTP/1.1 400 Bad\r\n\r\nProvided path is unauthorized!",
+                        build_json_response((*content.clone()).to_string(), *len),
                     )
                     .await?
                 }
+                None => match parse_params(&instr, &path, &mut socket, &mut cache).await {
+                    Some(_) => {
+                        println!("Cache miss");
+                        println!(
+                            "Instruction: `{}` on path: `{}` executed succesfuly",
+                            instr, path
+                        )
+                    }
+                    None => {
+                        send_response(
+                            &mut socket,
+                            "HTTP/1.1 400 Bad\r\n\r\nProvided path is not authorized!".into(),
+                        )
+                        .await?
+                    }
+                },
+            },
+            None => {
+                send_response(
+                    &mut socket,
+                    "HTTP/1.1 400 Bad\r\n\r\nNo payload provided\r\n\r\n".into(),
+                )
+                .await?;
             }
         }
 

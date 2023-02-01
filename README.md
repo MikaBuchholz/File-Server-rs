@@ -18,11 +18,13 @@ When the server starts it will allways try to and create the **root** folder as 
 
   ```json
   {
-      "instr": <KnownInstruction>,
-      "path": <PathToWhatever>,
-      "content": <Optional>
+    "instr": "<KnownInstruction>",
+    "path": "<PathToWhatever>",
+    "content": "<Optional>"
   }
   ```
+
+  > **Hint**: Dont use the <> in the actual request
 
 ---
 

@@ -5,57 +5,67 @@ use std::collections::HashMap;
 use std::io;
 
 use std::str;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 pub async fn send_response(socket: &mut tokio::net::TcpStream, response: String) -> io::Result<()> {
     socket.write_all(response.as_bytes()).await?;
+    socket.flush().await?;
     Ok(())
 }
 
-pub async fn extract_json(json_like: &str) -> Option<(String, String)> {
+pub fn ok_200(message: &str) -> String {
+    format!("HTTP/1.1 200 OK\r\n\r\n{message}")
+}
+
+pub fn bad_400(message: &str) -> String {
+    format!("HTTP/1.1 400 Bad\r\n\r\n{message}")
+}
+
+fn json_format_is_valid(json: &Vec<Vec<&str>>) -> bool {
+    if json.len() != 2 {
+        return false;
+    }
+
+    for sub_vec in json {
+        if sub_vec.len() != 2 {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+pub async fn parse_json(json_like: &str) -> Option<(String, String)> {
+    //TODO: When write file will be added, more json params will too,
     let json_iter = json_like.chars();
-    let ln = json_like.find("Content-Length");
 
-    if ln.is_none() {
+    let json_start = json_like.find("{");
+    let json_end = json_like.find("}");
+
+    if json_start.is_none() || json_end.is_none() {
         return None;
     }
 
-    let mut eof_content: usize = 4;
+    let mut json_as_string = String::new();
 
-    let mut content_len_str = String::new();
-    for index in ln.unwrap() + 14..json_like.len() {
-        let cur_char = json_iter.clone().nth(index).unwrap().to_string();
-
-        if cur_char == "\r" {
-            eof_content += index;
-            break;
-        }
-
-        let parsed_char = cur_char.parse::<usize>();
-
-        if parsed_char.is_ok() {
-            content_len_str.push(cur_char.chars().next().unwrap());
-        }
+    for i in json_start.unwrap() + 1..json_end.unwrap() {
+        json_as_string.push(json_iter.clone().nth(i).unwrap());
     }
 
-    let content_length = content_len_str.parse::<usize>().unwrap();
+    json_as_string = json_as_string.replace(&[' ', '\n', '\t', '"'][..], "");
 
-    if content_length == 0 {
-        return None;
-    }
-
-    let json_str = &json_like[eof_content..eof_content + content_length]
-        .replace(&['\n', '\t', '}', '{', '"'][..], "");
-
-    let json: Vec<_> = json_str
+    let split_json: Vec<Vec<&str>> = json_as_string
         .split(",")
-        .collect::<Vec<&str>>()
-        .iter()
-        .map(|el| el.split(":").collect::<Vec<&str>>())
+        .map(|elem| elem.split(":").collect())
         .collect();
 
-    Some((json[0][1].trim().to_string(), json[1][1].trim().to_string()))
+    if !json_format_is_valid(&split_json) {
+        return None;
+    }
+
+    Some((split_json[0][1].into(), split_json[1][1].into()))
 }
 
 pub async fn parse_params(
@@ -77,53 +87,70 @@ pub async fn parse_params(
 pub async fn start_server() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
 
-    let mut buffer = [0; 256];
-
-    let mut cache: HashMap<(String, String), (String, usize)> = HashMap::new();
+    let cache: HashMap<(String, String), (String, usize)> = HashMap::new();
 
     loop {
-        let (mut socket, _) = listener.accept().await?;
+        match listener.accept().await {
+            Ok((mut socket, _)) => {
+                let mut cache = cache.clone();
 
-        socket.read(&mut buffer[..]).await?;
+                println!("Request: {:?}", socket.peer_addr());
 
-        let payload = str::from_utf8(&buffer).unwrap().replace("\0", "");
-        //TODO: invalidate/update cache after write operations (TODO: write ops) to specific cache location
-        match extract_json(&payload).await {
-            Some((instr, path)) => match cache.get(&(instr.clone(), path.clone())) {
-                Some((content, len)) => {
-                    println!("Cache hit!");
-                    send_response(
-                        &mut socket,
-                        build_json_response((*content.clone()).to_string(), *len),
-                    )
-                    .await?
-                }
-                None => match parse_params(&instr, &path, &mut socket, &mut cache).await {
-                    Some(_) => {
-                        println!("Cache miss");
-                        println!(
-                            "Instruction: `{}` on path: `{}` executed succesfuly",
-                            instr, path
-                        )
+                tokio::spawn(async move {
+                    let mut buffer = [0; 256];
+
+                    match socket.read(&mut buffer[..]).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("Error while reading from socket: {}", e);
+                            socket.shutdown().await.unwrap();
+                            return;
+                        }
                     }
-                    None => {
-                        send_response(
-                            &mut socket,
-                            "HTTP/1.1 400 Bad\r\n\r\nProvided path is not authorized!".into(),
-                        )
-                        .await?
+
+                    let payload = str::from_utf8(&buffer).unwrap().replace("\0", "");
+
+                    match parse_json(&payload).await {
+                        Some((instr, path)) => {
+                            match cache.get(&(instr.clone(), path.clone())) {
+                                Some((content, len)) => {
+                                    match send_response(
+                                        &mut socket,
+                                        build_json_response((*content.clone()).to_string(), *len),
+                                    )
+                                    .await
+                                    {
+                                        Ok(_) => {}
+                                        Err(e) => {
+                                            println!("Error while sending to socket: {}", e);
+                                            socket.shutdown().await.unwrap();
+                                            return;
+                                        }
+                                    };
+                                }
+                                None => {
+                                    parse_params(&instr, &path, &mut socket, &mut cache).await;
+                                }
+                            };
+                        }
+                        None => {
+                            match send_response(&mut socket, bad_400("No payload provided")).await {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    println!("Error while sending to socket: {}", e);
+                                    socket.shutdown().await.unwrap();
+                                    return;
+                                }
+                            }
+                        }
                     }
-                },
-            },
-            None => {
-                send_response(
-                    &mut socket,
-                    "HTTP/1.1 400 Bad\r\n\r\nNo payload provided\r\n\r\n".into(),
-                )
-                .await?;
+                });
+            }
+            Err(e) => {
+                println!("Error accepting connection: {}", e);
+                break;
             }
         }
-
-        socket.flush().await?;
     }
+    Ok(())
 }

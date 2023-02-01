@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
-    fs,
-    io::{self, BufReader, Read},
+    fs::{self, OpenOptions},
+    io::{self, BufReader, Read, Write},
     path::Path,
 };
 
@@ -100,12 +100,27 @@ async fn read_file(path: &str) -> Result<(String, usize), FileResult> {
     Ok((buffer, length.unwrap()))
 }
 
+async fn write_to_file(path: &str, content: String) -> Result<(), FileResult> {
+    if !file_exists(&path) {
+        return Err(FileResult::DoesNotExist);
+    }
+
+    match OpenOptions::new().append(true).open(path) {
+        Ok(mut file) => match file.write_all(content.as_bytes()) {
+            Ok(_) => {}
+            Err(_) => return Err(FileResult::Error),
+        },
+        Err(_) => return Err(FileResult::Error),
+    }
+
+    Ok(())
+}
+
 async fn read_dir(path: &str) -> Result<(String, usize), FileResult> {
     if !dir_exists(&path) {
         return Err(FileResult::DoesNotExist);
     }
 
-    //let origin: String = format!("{path}/");
     let mut dir_string = String::new();
 
     match fs::read_dir(path) {
@@ -147,6 +162,7 @@ pub fn build_json_response(content: String, len: usize) -> String {
 pub async fn execute_instruction(
     instr: &str,
     path: &str,
+    text: &Option<String>,
     socket: &mut tokio::net::TcpStream,
     cache: &mut HashMap<(String, String), (String, usize)>,
 ) -> io::Result<()> {
@@ -205,6 +221,20 @@ pub async fn execute_instruction(
                 FileResult::Error => ok_200("Request header was valid. Failed to read directory!"),
                 _ => bad_400("Unreachable. RD:_"),
             },
+        },
+
+        WRITE_TO_FILE_INSTR => match text {
+            Some(txt) => match write_to_file(path, txt.to_string()).await {
+                Ok(_) => ok_200("Text successfuly written file"),
+                Err(e) => match e {
+                    FileResult::DoesNotExist => ok_200("Requested file does not exist!"),
+                    FileResult::Error => {
+                        ok_200("Request header was valid. Failed writing to file!")
+                    }
+                    _ => bad_400("Unreachable. WF:_"),
+                },
+            },
+            None => bad_400("No text provided for write"),
         },
 
         &_ => bad_400("Unknown instruction"),

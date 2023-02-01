@@ -1,7 +1,5 @@
-use crate::file_handling::build_json_response;
 use crate::file_handling::{execute_instruction, is_inside_root};
 
-use std::collections::HashMap;
 use std::io;
 
 use std::str;
@@ -103,13 +101,12 @@ pub async fn parse_params(
     path: &String,
     text: &Option<String>,
     socket: &mut tokio::net::TcpStream,
-    cache: &mut HashMap<(String, String), (String, usize)>,
 ) -> Option<()> {
     if !is_inside_root(&path) {
         return None;
     }
 
-    let _ = execute_instruction(&instr, &path, &text, socket, cache).await;
+    let _ = execute_instruction(&instr, &path, &text, socket).await;
 
     Some(())
 }
@@ -118,14 +115,10 @@ pub async fn parse_params(
 pub async fn start_server() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
 
-    let cache: HashMap<(String, String), (String, usize)> = HashMap::new();
-
     loop {
         match listener.accept().await {
             Ok((mut socket, _)) => {
-                let mut cache = cache.clone();
-
-                debug_print!(format!("Request: {:?}", socket.peer_addr()));
+                debug_print!(format!("Request: {:?}", socket.peer_addr(),));
 
                 tokio::spawn(async move {
                     let mut buffer = [0; 256];
@@ -143,30 +136,7 @@ pub async fn start_server() -> io::Result<()> {
 
                     match parse_json(&payload).await {
                         Some((instr, path, text)) => {
-                            match cache.get(&(instr.clone(), path.clone())) {
-                                Some((content, len)) => {
-                                    match send_response(
-                                        &mut socket,
-                                        build_json_response((*content.clone()).to_string(), *len),
-                                    )
-                                    .await
-                                    {
-                                        Ok(_) => {}
-                                        Err(e) => {
-                                            debug_print!(format!(
-                                                "Error while sending to socket: {}",
-                                                e
-                                            ));
-                                            socket.shutdown().await.unwrap();
-                                            return;
-                                        }
-                                    };
-                                }
-                                None => {
-                                    parse_params(&instr, &path, &text, &mut socket, &mut cache)
-                                        .await;
-                                }
-                            };
+                            parse_params(&instr, &path, &text, &mut socket).await;
                         }
                         None => {
                             match send_response(&mut socket, bad_400("No payload provided")).await {

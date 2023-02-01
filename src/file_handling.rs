@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs::{self, OpenOptions},
     io::{self, BufReader, Read, Write},
     path::Path,
@@ -164,7 +163,6 @@ pub async fn execute_instruction(
     path: &str,
     text: &Option<String>,
     socket: &mut tokio::net::TcpStream,
-    cache: &mut HashMap<(String, String), (String, usize)>,
 ) -> io::Result<()> {
     let response: String = match instr {
         CREATE_DIR_INSTR => match create_path_to(path) {
@@ -200,10 +198,7 @@ pub async fn execute_instruction(
             Err(_) => ok_200("Request header was valid. Failed to delete file!"),
         },
         READ_FILE_INSTR => match read_file(path).await {
-            Ok((content, len)) => {
-                cache.insert((instr.into(), path.into()), (content.clone(), len));
-                build_json_response(content, len)
-            }
+            Ok((content, len)) => build_json_response(content, len),
             Err(e) => match e {
                 FileResult::DoesNotExist => ok_200("Requested file does not exist!"),
                 FileResult::Error => ok_200("Request header was valid. Failed to read file!"),
@@ -212,10 +207,7 @@ pub async fn execute_instruction(
         },
 
         READ_DIR_INSTR => match read_dir(path).await {
-            Ok((content, len)) => {
-                cache.insert((instr.into(), path.into()), (content.clone(), len));
-                build_json_response(content, len)
-            }
+            Ok((content, len)) => build_json_response(content, len),
             Err(e) => match e {
                 FileResult::DoesNotExist => ok_200("Requested directory does not exist!"),
                 FileResult::Error => ok_200("Request header was valid. Failed to read directory!"),

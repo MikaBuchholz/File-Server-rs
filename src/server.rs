@@ -9,6 +9,14 @@ use std::str;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+macro_rules! debug_print {
+    ($ex: expr) => {
+        if cfg!(debug_assertions) {
+            println!("{}", $ex)
+        }
+    };
+}
+
 pub async fn send_response(socket: &mut tokio::net::TcpStream, response: String) -> io::Result<()> {
     socket.write_all(response.as_bytes()).await?;
     socket.flush().await?;
@@ -24,7 +32,7 @@ pub fn bad_400(message: &str) -> String {
 }
 
 fn json_format_is_valid(json: &Vec<Vec<&str>>) -> bool {
-    if json.len() != 2 {
+    if json.len() != 3 {
         return false;
     }
 
@@ -37,8 +45,8 @@ fn json_format_is_valid(json: &Vec<Vec<&str>>) -> bool {
     return true;
 }
 
-pub async fn parse_json(json_like: &str) -> Option<(String, String)> {
-    //TODO: When write file will be added, more json params will too,
+///Return (Instruction, Path, Option<Content>)
+pub async fn parse_json(json_like: &str) -> Option<(String, String, Option<String>)> {
     let json_iter = json_like.chars();
 
     let json_start = json_like.find("{");
@@ -54,23 +62,46 @@ pub async fn parse_json(json_like: &str) -> Option<(String, String)> {
         json_as_string.push(json_iter.clone().nth(i).unwrap());
     }
 
-    json_as_string = json_as_string.replace(&[' ', '\n', '\t', '"'][..], "");
+    json_as_string = json_as_string.replace(&['\n', '\t', '"'][..], "");
 
-    let split_json: Vec<Vec<&str>> = json_as_string
+    let mut split_json: Vec<Vec<&str>> = json_as_string
         .split(",")
         .map(|elem| elem.split(":").collect())
         .collect();
+
+    if split_json.len() == 2 {
+        //This ensures that the format bellow will be true
+        split_json.push(vec!["", ""])
+    }
 
     if !json_format_is_valid(&split_json) {
         return None;
     }
 
-    Some((split_json[0][1].into(), split_json[1][1].into()))
+    //This ensures that if provided following pattern will be true:
+    //[[content, ...], [instr, ...], [path, ...]]
+
+    split_json.sort_by(|a, b| a[0].cmp(b[0]));
+
+    if split_json[0][1].len() == 0 {
+        return Some((
+            split_json[1][1].trim().into(), // Instruction
+            split_json[2][1].trim().into(), // Path
+            None,                           // Text
+        ));
+    } else {
+        return Some((
+            split_json[1][1].trim().into(),       // Instruction
+            split_json[2][1].trim().into(),       // Path
+            Some(split_json[0][1].trim().into()), //Text
+        ));
+    }
 }
 
 pub async fn parse_params(
     instr: &String,
     path: &String,
+    text: &Option<String>,
     socket: &mut tokio::net::TcpStream,
     cache: &mut HashMap<(String, String), (String, usize)>,
 ) -> Option<()> {
@@ -78,7 +109,7 @@ pub async fn parse_params(
         return None;
     }
 
-    let _ = execute_instruction(&instr, &path, socket, cache).await;
+    let _ = execute_instruction(&instr, &path, &text, socket, cache).await;
 
     Some(())
 }
@@ -94,7 +125,7 @@ pub async fn start_server() -> io::Result<()> {
             Ok((mut socket, _)) => {
                 let mut cache = cache.clone();
 
-                println!("Request: {:?}", socket.peer_addr());
+                debug_print!(format!("Request: {:?}", socket.peer_addr()));
 
                 tokio::spawn(async move {
                     let mut buffer = [0; 256];
@@ -102,7 +133,7 @@ pub async fn start_server() -> io::Result<()> {
                     match socket.read(&mut buffer[..]).await {
                         Ok(_) => {}
                         Err(e) => {
-                            println!("Error while reading from socket: {}", e);
+                            debug_print!(format!("Error while reading from socket: {}", e));
                             socket.shutdown().await.unwrap();
                             return;
                         }
@@ -111,7 +142,7 @@ pub async fn start_server() -> io::Result<()> {
                     let payload = str::from_utf8(&buffer).unwrap().replace("\0", "");
 
                     match parse_json(&payload).await {
-                        Some((instr, path)) => {
+                        Some((instr, path, text)) => {
                             match cache.get(&(instr.clone(), path.clone())) {
                                 Some((content, len)) => {
                                     match send_response(
@@ -122,14 +153,18 @@ pub async fn start_server() -> io::Result<()> {
                                     {
                                         Ok(_) => {}
                                         Err(e) => {
-                                            println!("Error while sending to socket: {}", e);
+                                            debug_print!(format!(
+                                                "Error while sending to socket: {}",
+                                                e
+                                            ));
                                             socket.shutdown().await.unwrap();
                                             return;
                                         }
                                     };
                                 }
                                 None => {
-                                    parse_params(&instr, &path, &mut socket, &mut cache).await;
+                                    parse_params(&instr, &path, &text, &mut socket, &mut cache)
+                                        .await;
                                 }
                             };
                         }
@@ -137,7 +172,7 @@ pub async fn start_server() -> io::Result<()> {
                             match send_response(&mut socket, bad_400("No payload provided")).await {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    println!("Error while sending to socket: {}", e);
+                                    debug_print!(format!("Error while sending to socket: {}", e));
                                     socket.shutdown().await.unwrap();
                                     return;
                                 }
@@ -147,7 +182,7 @@ pub async fn start_server() -> io::Result<()> {
                 });
             }
             Err(e) => {
-                println!("Error accepting connection: {}", e);
+                debug_print!(format!("Error accepting connection: {}", e));
                 break;
             }
         }

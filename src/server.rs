@@ -93,7 +93,7 @@ pub async fn parse_json(json_like: &str) -> Option<(String, String, Option<Strin
         return Some((
             split_json[1][1].trim().into(),       // Instruction
             split_json[2][1].trim().into(),       // Path
-            Some(split_json[0][1].trim().into()), //Text
+            Some(split_json[0][1].trim().into()), // Text
         ));
     }
 }

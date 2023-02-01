@@ -1,10 +1,11 @@
 use std::{
+    collections::HashMap,
     fs,
     io::{self, BufReader, Read},
-    path::Path, collections::HashMap,
+    path::Path,
 };
 
-use crate::server::send_response;
+use crate::server::{bad_400, ok_200, send_response};
 
 const CREATE_DIR_INSTR: &str = "CRTDIR";
 const CREATE_FILE_INSTR: &str = "CRTFILE";
@@ -12,6 +13,10 @@ const DELETE_FILE_INSTR: &str = "DELFILE";
 const DELETE_DIR_INSTR: &str = "DELDIR";
 const READ_DIR_INSTR: &str = "READDIR";
 const READ_FILE_INSTR: &str = "READFILE";
+const WRITE_TO_FILE_INSTR: &str = "WRTFILE";
+
+pub const GEN_READ_INSTR: &[&str; 2] = &[READ_DIR_INSTR, READ_FILE_INSTR];
+pub const GEN_WRITE_INSTR: &[&str; 1] = &[WRITE_TO_FILE_INSTR];
 
 #[derive(PartialEq, Debug)]
 enum FileResult {
@@ -143,79 +148,66 @@ pub async fn execute_instruction(
     instr: &str,
     path: &str,
     socket: &mut tokio::net::TcpStream,
-    cache: &mut HashMap<(String, String), (String, usize)>
+    cache: &mut HashMap<(String, String), (String, usize)>,
 ) -> io::Result<()> {
     let response: String = match instr {
         CREATE_DIR_INSTR => match create_path_to(path) {
             Ok(file_res) => match file_res {
-                FileResult::Success => "HTTP/1.1 200 OK\r\n\r\nCreated directory!".into(),
-                FileResult::Exists => "HTTP/1.1 200 OK\r\n\r\nDirectory already exists!".into(),
-                _ => "HTTP/1.1 200 OK\r\n\r\nUnreachable. CD:_".into(),
+                FileResult::Success => ok_200("Created directory!"),
+                FileResult::Exists => ok_200("Directory already exists!"),
+                _ => bad_400("Unreachable. CD:_"),
             },
-            Err(_) => "HTTP/1.1 400 Bad\r\n\r\nCargo was valid. Failed to create directory!".into(),
+            Err(_) => ok_200("Request header was valid. Failed to create directory!"),
         },
         CREATE_FILE_INSTR => match create_file_at(path) {
             Ok(file_res) => match file_res {
-                FileResult::Success => "HTTP/1.1 200 OK\r\n\r\nCreated file!".into(),
-                FileResult::Exists => "HTTP/1.1 200 OK\r\n\r\nFile already exists!".into(),
-                _ => "HTTP/1.1 200 OK\r\n\r\nUnreachable. CF:_".into(),
+                FileResult::Success => ok_200("Created file!"),
+                FileResult::Exists => ok_200("File already exists!"),
+                _ => bad_400("Unreachable. CF:_"),
             },
-            Err(_) => "HTTP/1.1 400 Bad\r\n\r\nCargo was valid. Failed to create file!".into(),
+            Err(_) => ok_200("Request header was valid. Failed to create file!"),
         },
         DELETE_FILE_INSTR => match delete_file(path) {
             Ok(file_res) => match file_res {
-                FileResult::Success => "HTTP/1.1 200 OK\r\n\r\nDeleted file!".into(),
-                FileResult::DoesNotExist => "HTTP/1.1 200 OK\r\n\r\nFile does not exist!".into(),
-                _ => "HTTP/1.1 200 OK\r\n\r\nUnreachable DF:_".into(),
+                FileResult::Success => ok_200("Deleted file!"),
+                FileResult::DoesNotExist => ok_200("File does not exist!"),
+                _ => bad_400("Unreachable DF:_"),
             },
-            Err(_) => {
-                "HTTP/1.1 400 Bad\r\n\r\nRequest header seems to be valid. Failed to delete file!"
-                    .into()
-            }
+            Err(_) => ok_200("Request header was valid. Failed to delete file!"),
         },
         DELETE_DIR_INSTR => match delete_dir(path) {
             Ok(file_res) => match file_res {
-                FileResult::Success => "HTTP/1.1 200 OK\r\n\r\nDeleted directory!".into(),
-                FileResult::DoesNotExist => {
-                    "HTTP/1.1 200 OK\r\n\r\nDirectory does not exist!".into()
-                }
-                _ => "HTTP/1.1 200 OK\r\n\r\nUnreachable. DD:_".into(),
+                FileResult::Success => ok_200("Deleted directory!"),
+                FileResult::DoesNotExist => ok_200("Directory does not exist!"),
+                _ => bad_400("Unreachable. DD:_"),
             },
-            Err(_) => {
-                "HTTP/1.1 400 Bad\r\n\r\nRequest header seems to be valid. Failed to delete file!"
-                    .into()
-            }
+            Err(_) => ok_200("Request header was valid. Failed to delete file!"),
         },
         READ_FILE_INSTR => match read_file(path).await {
-            Ok((content, len)) => {cache.insert((instr.into(), path.into()), (content.clone(), len)); build_json_response(content, len)},
+            Ok((content, len)) => {
+                cache.insert((instr.into(), path.into()), (content.clone(), len));
+                build_json_response(content, len)
+            }
             Err(e) => match e {
-                FileResult::DoesNotExist => {
-                    "HTTP/1.1 400 Bad\r\n\r\nRequested file does not exist!".into()
-                }
-                FileResult::Error => {
-                    "HTTP/1.1 400 Bad\r\n\r\nRequest header seems to be valid. Failed to read file!"
-                        .into()
-                }
-                _ => "HTTP/1.1 200 OK\r\n\r\nUnreachable. RF:_".into(),
+                FileResult::DoesNotExist => ok_200("Requested file does not exist!"),
+                FileResult::Error => ok_200("Request header was valid. Failed to read file!"),
+                _ => bad_400("Unreachable. RF:_"),
             },
         },
 
         READ_DIR_INSTR => match read_dir(path).await {
-            Ok((content, len)) => {cache.insert((instr.into(), path.into()), (content.clone(), len)); build_json_response(content, len)},
+            Ok((content, len)) => {
+                cache.insert((instr.into(), path.into()), (content.clone(), len));
+                build_json_response(content, len)
+            }
             Err(e) => match e {
-                FileResult::DoesNotExist => {
-                    "HTTP/1.1 400 Bad\r\n\r\nRequested directory does not exist!".into()
-                }
-                FileResult::Error => {
-                    "HTTP/1.1 400 Bad\r\n\r\nRequest header seems to be valid. Failed to read directory!"
-                        .into()
-                }
-                _ => "HTTP/1.1 200 OK\r\n\r\nUnreachable. RD:_".into(),
+                FileResult::DoesNotExist => ok_200("Requested directory does not exist!"),
+                FileResult::Error => ok_200("Request header was valid. Failed to read directory!"),
+                _ => bad_400("Unreachable. RD:_"),
             },
-            
         },
 
-        &_ => "HTTP/1.1 400 Bad\r\n\r\nUnknown instruction\r\n\r\n".into(),
+        &_ => bad_400("Unknown instruction"),
     };
 
     send_response(socket, response).await?;

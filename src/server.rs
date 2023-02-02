@@ -2,6 +2,7 @@ use crate::file_handling::{execute_instruction, is_inside_root};
 
 use std::io;
 
+use std::process;
 use std::str;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,10 +16,23 @@ macro_rules! debug_print {
     };
 }
 
-pub async fn send_response(socket: &mut tokio::net::TcpStream, response: String) -> io::Result<()> {
-    socket.write_all(response.as_bytes()).await?;
-    socket.flush().await?;
-    Ok(())
+pub async fn send_response(socket: &mut tokio::net::TcpStream, response: String) {
+    match socket.write_all(response.as_bytes()).await {
+        Ok(_) => {}
+        Err(e) => {
+            debug_print!(format!("Error while sending to socket: {}", e));
+            socket.shutdown().await.unwrap();
+            process::exit(1);
+        }
+    }
+    match socket.flush().await {
+        Ok(_) => {}
+        Err(e) => {
+            debug_print!(format!("Error while flushing socket: {}", e));
+            socket.shutdown().await.unwrap();
+            process::exit(1);
+        }
+    }
 }
 
 pub fn ok_200(message: &str) -> String {
@@ -81,19 +95,15 @@ pub async fn parse_json(json_like: &str) -> Option<(String, String, Option<Strin
 
     split_json.sort_by(|a, b| a[0].cmp(b[0]));
 
+    let instruction: String = split_json[1][1].trim().into();
+    let path: String = split_json[2][1].trim().into();
+    let mut content: Option<String> = Some(split_json[0][1].trim().into());
+
     if split_json[0][1].len() == 0 {
-        return Some((
-            split_json[1][1].trim().into(), // Instruction
-            split_json[2][1].trim().into(), // Path
-            None,                           // Text
-        ));
-    } else {
-        return Some((
-            split_json[1][1].trim().into(),       // Instruction
-            split_json[2][1].trim().into(),       // Path
-            Some(split_json[0][1].trim().into()), // Text
-        ));
+        content = None;
     }
+
+    return Some((instruction, path, content));
 }
 
 pub async fn parse_params(
@@ -136,18 +146,18 @@ pub async fn start_server() -> io::Result<()> {
 
                     match parse_json(&payload).await {
                         Some((instr, path, text)) => {
-                            parse_params(&instr, &path, &text, &mut socket).await;
-                        }
-                        None => {
-                            match send_response(&mut socket, bad_400("No payload provided")).await {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    debug_print!(format!("Error while sending to socket: {}", e));
-                                    socket.shutdown().await.unwrap();
-                                    return;
+                            match parse_params(&instr, &path, &text, &mut socket).await {
+                                Some(_) => {}
+                                None => {
+                                    send_response(
+                                        &mut socket,
+                                        bad_400("Path has to be inside ./root"),
+                                    )
+                                    .await;
                                 }
                             }
                         }
+                        None => send_response(&mut socket, bad_400("No payload provided")).await,
                     }
                 });
             }

@@ -232,7 +232,7 @@ pub async fn execute_instruction(
         &_ => bad_400("Unknown instruction"),
     };
 
-    send_response(socket, response).await?;
+    send_response(socket, response).await;
 
     Ok(())
 }

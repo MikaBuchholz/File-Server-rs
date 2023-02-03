@@ -1,4 +1,5 @@
 use crate::file_handling::{execute_instruction, is_inside_root};
+use crate::file_handling::{DELETE_INSTR, GET_INSTR, POST_INSTR, PUT_INSTR};
 
 use std::io;
 
@@ -7,6 +8,22 @@ use std::str;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+
+#[derive(PartialEq)]
+pub enum ParseError {
+    WrongMethod,
+    UnkownMethod,
+    NotInRoot,
+}
+
+#[derive(PartialEq)]
+pub enum RequestVerbs {
+    GET,
+    POST,
+    DELETE,
+    PUT,
+    UNKOWN,
+}
 
 macro_rules! debug_print {
     ($ex: expr) => {
@@ -57,9 +74,21 @@ fn json_format_is_valid(json: &Vec<Vec<&str>>) -> bool {
     return true;
 }
 
-///Return (Instruction, Path, Option<Content>)
-pub async fn parse_json(json_like: &str) -> Option<(String, String, Option<String>)> {
+///Return (Instruction, Path, Option<Content>, Method)
+pub async fn parse_json(json_like: &str) -> Option<(String, String, Option<String>, String)> {
     let json_iter = json_like.chars();
+
+    let mut method = String::with_capacity(7);
+
+    for c in json_iter.clone() {
+        if c == '/' {
+            break;
+        }
+
+        method.push(c);
+    }
+
+    method = method.trim().into();
 
     let json_start = json_like.find("{");
     let json_end = json_like.find("}");
@@ -103,22 +132,71 @@ pub async fn parse_json(json_like: &str) -> Option<(String, String, Option<Strin
         content = None;
     }
 
-    return Some((instruction, path, content));
+    return Some((instruction, path, content, method));
+}
+
+fn instr_to_verb(instr: &String) -> RequestVerbs {
+    let instr_into = &instr.as_str();
+
+    if POST_INSTR.contains(instr_into) {
+        return RequestVerbs::POST;
+    }
+
+    if DELETE_INSTR.contains(instr_into) {
+        return RequestVerbs::DELETE;
+    }
+
+    if GET_INSTR.contains(instr_into) {
+        return RequestVerbs::GET;
+    }
+
+    if PUT_INSTR.contains(instr_into) {
+        return RequestVerbs::PUT;
+    }
+
+    return RequestVerbs::UNKOWN;
+}
+
+fn string_method_to_enum(method: &String) -> RequestVerbs {
+    let cleaned_method = method.trim().to_lowercase();
+
+    match &*cleaned_method {
+        "post" => RequestVerbs::POST,
+        "delete" => RequestVerbs::DELETE,
+        "get" => RequestVerbs::GET,
+        "put" => RequestVerbs::PUT,
+        _ => RequestVerbs::UNKOWN,
+    }
 }
 
 pub async fn parse_params(
     instr: &String,
     path: &String,
     text: &Option<String>,
+    method: &String,
     socket: &mut tokio::net::TcpStream,
-) -> Option<()> {
+) -> Result<(), ParseError> {
     if !is_inside_root(&path) {
-        return None;
+        return Err(ParseError::NotInRoot);
     }
 
-    let _ = execute_instruction(&instr, &path, &text, socket).await;
+    match instr_to_verb(instr) {
+        RequestVerbs::UNKOWN => {
+            return Err(ParseError::UnkownMethod);
+        }
+        verbs => match string_method_to_enum(method) {
+            RequestVerbs::UNKOWN => return Err(ParseError::UnkownMethod),
+            known_verbs => {
+                if known_verbs != verbs {
+                    return Err(ParseError::WrongMethod);
+                }
+            }
+        },
+    }
 
-    Some(())
+    execute_instruction(&instr, &path, &text, socket).await;
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -128,7 +206,7 @@ pub async fn start_server() -> io::Result<()> {
     loop {
         match listener.accept().await {
             Ok((mut socket, _)) => {
-                debug_print!(format!("Request: {:?}", socket.peer_addr(),));
+                debug_print!(format!("Request: {:?}", socket.peer_addr()));
 
                 tokio::spawn(async move {
                     let mut buffer = [0; 256];
@@ -145,15 +223,21 @@ pub async fn start_server() -> io::Result<()> {
                     let payload = str::from_utf8(&buffer).unwrap().replace("\0", "");
 
                     match parse_json(&payload).await {
-                        Some((instr, path, text)) => {
-                            match parse_params(&instr, &path, &text, &mut socket).await {
-                                Some(_) => {}
-                                None => {
-                                    send_response(
-                                        &mut socket,
-                                        bad_400("Path has to be inside ./root"),
-                                    )
-                                    .await;
+                        Some((instr, path, text, method)) => {
+                            match parse_params(&instr, &path, &text, &method, &mut socket).await {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    let response = match e {
+                                        ParseError::NotInRoot => {
+                                            bad_400(&*format!("Supplied path: `{path}` is not inside ./root"))
+                                        }
+                                        ParseError::WrongMethod => {bad_400(&*format!("Supplied method: `{method}` is not supported for given instruction: `{instr}`"))}
+                                        ParseError::UnkownMethod => {
+                                            bad_400(&*format!("Supplied method: `{method}` is unknown or not supported"))
+                                        }
+                                    };
+
+                                    send_response(&mut socket, response).await;
                                 }
                             }
                         }

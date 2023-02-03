@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io::{self, BufReader, Read, Write},
+    io::{BufReader, Read, Write},
     path::Path,
 };
 
@@ -14,8 +14,10 @@ const READ_DIR_INSTR: &str = "READDIR";
 const READ_FILE_INSTR: &str = "READFILE";
 const WRITE_TO_FILE_INSTR: &str = "WRTFILE";
 
-pub const GEN_READ_INSTR: &[&str; 2] = &[READ_DIR_INSTR, READ_FILE_INSTR];
-pub const GEN_WRITE_INSTR: &[&str; 1] = &[WRITE_TO_FILE_INSTR];
+pub const POST_INSTR: &[&str; 2] = &[CREATE_DIR_INSTR, CREATE_DIR_INSTR];
+pub const DELETE_INSTR: &[&str; 2] = &[DELETE_DIR_INSTR, DELETE_FILE_INSTR];
+pub const GET_INSTR: &[&str; 2] = &[READ_DIR_INSTR, READ_FILE_INSTR];
+pub const PUT_INSTR: &[&str; 1] = &[WRITE_TO_FILE_INSTR];
 
 #[derive(PartialEq, Debug)]
 enum FileResult {
@@ -158,12 +160,13 @@ pub fn build_json_response(content: String, len: usize) -> String {
      )
 }
 
+//TODO: Update repsonse text with more usefull error / success messages
 pub async fn execute_instruction(
     instr: &str,
     path: &str,
     text: &Option<String>,
     socket: &mut tokio::net::TcpStream,
-) -> io::Result<()> {
+) {
     let response: String = match instr {
         CREATE_DIR_INSTR => match create_path_to(path) {
             Ok(file_res) => match file_res {
@@ -233,6 +236,4 @@ pub async fn execute_instruction(
     };
 
     send_response(socket, response).await;
-
-    Ok(())
 }

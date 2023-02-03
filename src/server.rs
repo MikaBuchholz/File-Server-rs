@@ -14,6 +14,7 @@ pub enum ParseError {
     WrongMethod,
     UnkownMethod,
     NotInRoot,
+    UnknownInstruction,
 }
 
 #[derive(PartialEq)]
@@ -184,10 +185,10 @@ pub async fn parse_params(
 
     match instr_to_verb(instr) {
         RequestVerbs::UNKOWN => {
-            return Err(ParseError::UnkownMethod);
+            return Err(ParseError::UnknownInstruction);
         }
         verbs => match string_method_to_enum(method) {
-            RequestVerbs::UNKOWN => return Err(ParseError::UnkownMethod),
+            RequestVerbs::UNKOWN => return Err(ParseError::WrongMethod),
             known_verbs => {
                 if known_verbs != verbs {
                     return Err(ParseError::WrongMethod);
@@ -240,6 +241,9 @@ pub async fn start_server() -> io::Result<()> {
                                         ParseError::WrongMethod => {bad_400(&*format!("Supplied method: `{method}` is not supported for given instruction: `{instr}`"))}
                                         ParseError::UnkownMethod => {
                                             bad_400(&*format!("Supplied method: `{method}` is unknown or not supported"))
+                                        }
+                                        ParseError::UnknownInstruction =>{
+                                            bad_400(&*format!("Supplied instr: `{instr}` is unknown or not supported"))
                                         }
                                     };
 

@@ -52,12 +52,14 @@ pub async fn send_response(socket: &mut tokio::net::TcpStream, response: String)
     }
 }
 
-pub fn ok_200(message: &str) -> String {
-    format!("HTTP/1.1 200 OK\r\n\r\n{message}")
+pub fn ok_200(message: impl Into<String>) -> String {
+    let msg = message.into();
+    format!("HTTP/1.1 200 OK\r\n\r\n{msg}")
 }
 
-pub fn bad_400(message: &str) -> String {
-    format!("HTTP/1.1 400 Bad\r\n\r\n{message}")
+pub fn bad_400(message: impl Into<String>) -> String {
+    let msg = message.into();
+    format!("HTTP/1.1 400 Bad\r\n\r\n{msg}")
 }
 
 fn json_format_is_valid(json: &Vec<Vec<&str>>) -> bool {

@@ -105,7 +105,7 @@ pub async fn parse_json(json_like: &str) -> Option<(String, String, Option<Strin
         json_as_string.push(json_iter.clone().nth(i).unwrap());
     }
 
-    json_as_string = json_as_string.replace(&['\n', '\t', '"'][..], "");
+    json_as_string = json_as_string.replace(&['"'][..], "");
 
     let mut split_json: Vec<Vec<&str>> = json_as_string
         .split(",")
@@ -226,6 +226,10 @@ pub async fn start_server() -> io::Result<()> {
 
                     match parse_json(&payload).await {
                         Some((instr, path, text, method)) => {
+                            debug_print!(format!(
+                                "Instr: {:?}\nPath: {:?}\nText: {:?}\nMethod: {:?}\n",
+                                instr, path, text, method
+                            ));
                             match parse_params(&instr, &path, &text, &method, &mut socket).await {
                                 Ok(_) => {}
                                 Err(e) => {

@@ -160,7 +160,15 @@ pub fn build_json_response(content: String, len: usize) -> String {
      )
 }
 
-//TODO: Update repsonse text with more usefull error / success messages
+fn valid_header(instr: &str, path: &str, text: &Option<String>) -> String {
+    match text {
+        Some(txt) => 
+            format!("Request header was valid. Still failed action: `{instr}` on `{path}`\nInstruction: `{instr}`\nPath: `{path}`\nContent: `{txt}`"),
+        None => 
+            format!("Request header was valid. Still failed action: `{instr}` on `{path}`\nInstruction: `{instr}`\nPath: `{path}`\n")
+    }
+}
+
 pub async fn execute_instruction(
     instr: &str,
     path: &str,
@@ -170,41 +178,47 @@ pub async fn execute_instruction(
     let response: String = match instr {
         CREATE_DIR_INSTR => match create_path_to(path) {
             Ok(file_res) => match file_res {
-                FileResult::Success => ok_200("Created directory!"),
-                FileResult::Exists => ok_200("Directory already exists!"),
+                FileResult::Success => ok_200(format!("Created directory at: `{path}`")),
+                FileResult::Exists => ok_200(format!("Directory `{path}` already exists.")),
                 _ => bad_400("Unreachable. CD:_"),
             },
-            Err(_) => ok_200("Request header was valid. Failed to create directory!"),
+            Err(_) => ok_200(valid_header(instr, path, text)),
         },
         CREATE_FILE_INSTR => match create_file_at(path) {
             Ok(file_res) => match file_res {
-                FileResult::Success => ok_200("Created file!"),
-                FileResult::Exists => ok_200("File already exists!"),
+                FileResult::Success => ok_200(format!("Created file at: `{path}`")),
+                FileResult::Exists => ok_200(format!("File `{path}` already exists.")),
                 _ => bad_400("Unreachable. CF:_"),
             },
-            Err(_) => ok_200("Request header was valid. Failed to create file!"),
+            Err(_) => ok_200(valid_header(instr, path, text)),
         },
         DELETE_FILE_INSTR => match delete_file(path) {
             Ok(file_res) => match file_res {
-                FileResult::Success => ok_200("Deleted file!"),
-                FileResult::DoesNotExist => ok_200("File does not exist!"),
+                FileResult::Success => ok_200(format!("Deleted file at: `{path}`")),
+                FileResult::DoesNotExist => {
+                    ok_200(format!("File at supplied path: `{path}` does not exists."))
+                }
                 _ => bad_400("Unreachable DF:_"),
             },
-            Err(_) => ok_200("Request header was valid. Failed to delete file!"),
+            Err(_) => ok_200(valid_header(instr, path, text)),
         },
         DELETE_DIR_INSTR => match delete_dir(path) {
             Ok(file_res) => match file_res {
-                FileResult::Success => ok_200("Deleted directory!"),
-                FileResult::DoesNotExist => ok_200("Directory does not exist!"),
+                FileResult::Success => ok_200(format!("Deleted directory at: `{path}`")),
+                FileResult::DoesNotExist => ok_200(format!(
+                    "Directory at supplied path: `{path}` does not exists."
+                )),
                 _ => bad_400("Unreachable. DD:_"),
             },
-            Err(_) => ok_200("Request header was valid. Failed to delete file!"),
+            Err(_) => ok_200(valid_header(instr, path, text)),
         },
         READ_FILE_INSTR => match read_file(path).await {
             Ok((content, len)) => build_json_response(content, len),
             Err(e) => match e {
-                FileResult::DoesNotExist => ok_200("Requested file does not exist!"),
-                FileResult::Error => ok_200("Request header was valid. Failed to read file!"),
+                FileResult::DoesNotExist => ok_200(format!(
+                    "Can not read file at: `{path}` because it does not exist"
+                )),
+                FileResult::Error => ok_200(valid_header(instr, path, text)),
                 _ => bad_400("Unreachable. RF:_"),
             },
         },
@@ -212,27 +226,33 @@ pub async fn execute_instruction(
         READ_DIR_INSTR => match read_dir(path).await {
             Ok((content, len)) => build_json_response(content, len),
             Err(e) => match e {
-                FileResult::DoesNotExist => ok_200("Requested directory does not exist!"),
-                FileResult::Error => ok_200("Request header was valid. Failed to read directory!"),
+                FileResult::DoesNotExist => ok_200(format!(
+                    "Can not read directory at: `{path}` because it does not exist"
+                )),
+                FileResult::Error => valid_header(instr, path, text),
                 _ => bad_400("Unreachable. RD:_"),
             },
         },
 
         WRITE_TO_FILE_INSTR => match text {
             Some(txt) => match write_to_file(path, txt.to_string()).await {
-                Ok(_) => ok_200("Text successfuly written file"),
+                Ok(_) => ok_200(format!(
+                    "Text: `{txt}` successfuly written to file at `{path}`"
+                )),
                 Err(e) => match e {
-                    FileResult::DoesNotExist => ok_200("Requested file does not exist!"),
-                    FileResult::Error => {
-                        ok_200("Request header was valid. Failed writing to file!")
-                    }
+                    FileResult::DoesNotExist => ok_200(format!(
+                        "Can not write to file at: `{path}` because it does not exist"
+                    )),
+                    FileResult::Error => ok_200(valid_header(instr, path, text)),
                     _ => bad_400("Unreachable. WF:_"),
                 },
             },
-            None => bad_400("No text provided for write"),
+            None => bad_400(format!(
+                "Can not write to `{path}` because not content was provided"
+            )),
         },
 
-        &_ => bad_400("Unknown instruction"),
+        &_ => bad_400(format!("Unknown instruction: `{instr}`")),
     };
 
     send_response(socket, response).await;
